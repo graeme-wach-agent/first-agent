@@ -3,6 +3,7 @@ import json
 import os
 import shlex
 import subprocess
+import difflib
 from datetime import datetime
 from pathlib import Path
 from openai import OpenAI
@@ -76,6 +77,57 @@ def write_file(path: str, content: str):
     rel = target.relative_to(PROJECT_ROOT)
     return f"Successfully wrote file: {rel}"
 
+def replace_in_file(path: str, old_text: str, new_text: str):
+    target = safe_path(path)
+
+    if not target.exists():
+        return f"Error: file does not exist: {path}"
+
+    if not target.is_file():
+        return f"Error: path is not a file: {path}"
+
+    try:
+        content = target.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return "Error: file is not valid UTF-8 text."
+
+    if old_text not in content:
+        return "Error: target text not found in file."
+
+    updated_content = content.replace(old_text, new_text, 1)
+    target.write_text(updated_content, encoding="utf-8")
+
+    rel = target.relative_to(PROJECT_ROOT)
+    return f"Successfully updated file: {rel}"
+
+def preview_edit(path: str, old_text: str, new_text: str):
+    target = safe_path(path)
+
+    if not target.exists():
+        return f"Error: file does not exist: {path}"
+
+    if not target.is_file():
+        return f"Error: path is not a file: {path}"
+
+    try:
+        content = target.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return "Error: file is not valid UTF-8 text."
+
+    if old_text not in content:
+        return "Error: target text not found in file."
+
+    updated_content = content.replace(old_text, new_text, 1)
+
+    diff = difflib.unified_diff(
+        content.splitlines(),
+        updated_content.splitlines(),
+        fromfile=f"{path} (before)",
+        tofile=f"{path} (after)",
+        lineterm="",
+    )
+
+    return "\n".join(diff)
 
 ALLOWED_COMMANDS = {
     "ls",
@@ -254,6 +306,30 @@ TOOLS = [
 	"additionalProperties": False
     }
 },
+{
+    "type": "function",
+    "name": "preview_edit",
+    "description": "Preview a unified diff for an exact text replacement in a UTF-8 text file inside the project directory.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "Relative file path inside the project directory."
+            },
+            "old_text": {
+                "type": "string",
+                "description": "Exact text to replace."
+            },
+            "new_text": {
+                "type": "string",
+                "description": "Replacement text."
+            }
+        },
+        "required": ["path", "old_text", "new_text"],
+        "additionalProperties": False
+    }
+},
 ]
 
 
@@ -270,26 +346,34 @@ def call_tool(name, args):
         return run_shell_command(args["command"])
     if name == "replace_in_file":
         return replace_in_file(args["path"], args["old_text"], args["new_text"])
+    if name == "preview_edit":
+        return preview_edit(args["path"], args["old_text"], args["new_text"])
 
     return f"Error: unknown tool '{name}'"
 
 
 SYSTEM_PROMPT = """
-You are a local CLI coding assistant.
+You are a local CLI AI system controller.
 
 You have tools for:
 - getting local time
 - listing files
 - reading files
 - writing files
+- previewing text edits in files
+- replacing text in files
 - running safe shell commands
 
 Rules:
 - Use tools whenever helpful.
 - Never pretend to inspect files or run commands.
 - Prefer reading relevant files before editing them.
+- Before making small text edits, prefer preview_edit first, then use replace_in_file.
+- Prefer replace_in_file for small edits instead of overwriting an entire file.
 - Keep work constrained to the current project directory.
-- Explain clearly what you changed.
+- For non-trivial tasks, first briefly state your plan, then execute step by step.
+- Prefer small, reversible actions.
+- Explain clearly what you changed and why.
 """
 
 
